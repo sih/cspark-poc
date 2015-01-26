@@ -16,7 +16,7 @@ public abstract class AbstractCSparkTest {
 
 	SparkConf conf = new SparkConf().setMaster("local")
 		.set("spark.cassandra.connection.host", "localhost")
-		.setAppName("Counting Journeys")
+		.setAppName("CBE")
 		.set("spark.executor.memory", "1g");
 	sc = new JavaSparkContext(conf);
 
