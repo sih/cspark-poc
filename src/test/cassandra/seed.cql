@@ -31,4 +31,4 @@ VALUES ('1237', 'TY318', {'SNB' : 'Y', 'BOC' : 'Y'}, {'SNB' : 6,  'BOC' : 10}, {
 
 INSERT INTO spark_15.cbe 
 (instrid, isin , eligCls, eligHc, eligReason)
-VALUES ('1239', 'AB777', {'ECB' : 'Y'}, {'ECB' : 10}, {'SNB' : 'xyz'}); 
+VALUES ('1239', 'AB777', {'ECB' : 'Y'}, {'ECB' : 10}, {'ECB' : 'xyz'}); 

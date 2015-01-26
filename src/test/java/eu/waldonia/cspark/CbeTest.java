@@ -71,6 +71,69 @@ public class CbeTest extends AbstractCSparkTest implements Serializable {
 	rowsKeyedByInstrid.persist(StorageLevel.MEMORY_AND_DISK());
     }
 
+    
+    @Test
+    public void testNormalizeTableByInstrId() {
+	
+	Function<CassandraRow, Tuple2<String,List<Tuple2<String,String>>>> cbClsFlattener = 
+		new Function<CassandraRow, Tuple2<String,List<Tuple2<String,String>>>>() {
+		    
+		    @Override
+		    public Tuple2<String, List<Tuple2<String,String>>> call(CassandraRow row)
+			    throws Exception {
+
+			String instrId = row.getString(INSTRID);
+			Map<Object,Object> eligcls = row.getMap(ELIG_CLS);
+			List<Tuple2<String,String>> clssfs = new ArrayList<Tuple2<String,String>>();
+			for (Object e : eligcls.keySet()) {
+			    Tuple2<String,String> cbcls = new Tuple2<String,String>(e.toString(),eligcls.get(e).toString());
+			    clssfs.add(cbcls);
+			}
+			
+			return new Tuple2<String,List<Tuple2<String,String>>>(instrId, clssfs);
+		    }
+		};
+		
+		
+	JavaRDD<Tuple2<String,List<Tuple2<String,String>>>> flattenedCbCls = tableRDD.map(cbClsFlattener);
+	
+	List<Tuple2<String,List<Tuple2<String,String>>>> instrs = flattenedCbCls.collect();
+	for (Tuple2<String, List<Tuple2<String, String>>> t : instrs) {
+	    
+	    if (t._1.equals("1234")) {
+		assertEquals(4,t._2.size());
+		assertTrue(t._2.contains(new Tuple2<String,String>("BOE","Y")));
+		assertTrue(t._2.contains(new Tuple2<String,String>("SNB","N")));
+		assertTrue(t._2.contains(new Tuple2<String,String>("ECB","Y")));
+		assertTrue(t._2.contains(new Tuple2<String,String>("BOC","Y")));
+	    }
+	    else if (t._1.equals("1235")) {
+		assertEquals(2,t._2.size());
+		assertTrue(t._2.contains(new Tuple2<String,String>("BOE","Y")));
+		assertTrue(t._2.contains(new Tuple2<String,String>("BOC","Y")));
+	    }
+	    else if (t._1.equals("1236")) {
+		assertEquals(1,t._2.size());
+		assertTrue(t._2.contains(new Tuple2<String,String>("SNB","Y")));
+	    }
+	    else if (t._1.equals("1237")) {
+		assertEquals(2,t._2.size());
+		assertTrue(t._2.contains(new Tuple2<String,String>("SNB","Y")));
+		assertTrue(t._2.contains(new Tuple2<String,String>("BOC","Y")));
+	    }
+	    else if (t._1.equals("1239")) {
+		assertEquals(1,t._2.size());
+		assertTrue(t._2.contains(new Tuple2<String,String>("ECB","Y")));
+	    }
+	    else {
+		fail("Unexpected item in bagging area");
+	    }
+
+	}
+	
+    }
+    
+    
     @Test
     public void testNormalizeTableByCB() {
 	FlatMapFunction<CassandraRow, Tuple2<String, String>> flattenByCBCode = new FlatMapFunction<CassandraRow, Tuple2<String, String>>() {
@@ -231,6 +294,4 @@ public class CbeTest extends AbstractCSparkTest implements Serializable {
 	// TODO - not sure this is a goer	
     }
 
-    
-    
 }
