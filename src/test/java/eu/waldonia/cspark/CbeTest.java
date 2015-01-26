@@ -5,6 +5,7 @@ import static org.junit.Assert.*;
 
 import java.io.Serializable;
 import java.util.*;
+import java.util.Map.Entry;
 
 import org.apache.spark.api.java.*;
 import org.apache.spark.api.java.function.*;
@@ -22,7 +23,7 @@ public class CbeTest extends AbstractCSparkTest implements Serializable {
      * 
      */
     private static final long serialVersionUID = 2427600610912087082L;
-    
+
     private static final String TEST_CBE = "cbe";
     private static final String ELIG_CLS = "eligcls";
     private static final String INSTRID = "instrid";
@@ -30,158 +31,206 @@ public class CbeTest extends AbstractCSparkTest implements Serializable {
     private static final String ELIGHC = "elighc";
     private static final String ELIGREASON = "eligreason";
     private static final String ISIN = "isin";
-    
+
     private JavaRDD<CassandraRow> tableRDD;
-    
+    private JavaPairRDD<String, CassandraRow> rowsKeyedByInstrid;
+    private JavaRDD<Map<Tuple2<String, String>, String>> instridsKeyedByCBClsf;
+
     @Before
     public void setUp() {
 	tableRDD = javaFunctions(sc).cassandraTable(TEST_KEYSPACE, TEST_CBE);
-	tableRDD.persist(StorageLevel.MEMORY_AND_DISK());	// we will reuse this
+	tableRDD.persist(StorageLevel.MEMORY_AND_DISK()); // we will reuse this
     }
 
     @Test
-    public void testAccessMap() {
-	tableRDD.map(
-		new Function<CassandraRow, Map<String,List<String>>>() {
+    public void testNormalizeTableByInstrid() {
+	PairFunction<CassandraRow, String, CassandraRow> keyRowByInstrid = new PairFunction<CassandraRow, String, CassandraRow>() {
 
-		    private static final long serialVersionUID = -8486237623245232984L;
+	    @Override
+	    public Tuple2<String, CassandraRow> call(CassandraRow row)
+		    throws Exception {
 
-		    private Map<String,List<String>> cbeInstr = new HashMap<String,List<String>>();
-		    
-		    @Override
-		    public Map<String,List<String>> call(CassandraRow cassandraRow)
-			    throws Exception {
-			
-			Map<Object,Object> eligCls = cassandraRow.getMap(ELIG_CLS);
-			return cbeInstr;
-		    }
-		});
-	
-    
-	assertNotNull(tableRDD.first());
+		String instrid = row.getString(INSTRID);
+		return new Tuple2(instrid, row);
+	    }
+
+	};
+
+	rowsKeyedByInstrid = tableRDD.mapToPair(keyRowByInstrid);
+
+	assertNotNull(rowsKeyedByInstrid);
+
+	// check the data
+	List<CassandraRow> row1234 = rowsKeyedByInstrid.lookup("1234");
+	assertNotNull(row1234);
+	assertEquals(1, row1234.size());
+	List<CassandraRow> row1239 = rowsKeyedByInstrid.lookup("1234");
+	assertNotNull(row1239);
+	assertEquals(1, row1239.size());
+
+	rowsKeyedByInstrid.persist(StorageLevel.MEMORY_AND_DISK());
     }
-    
-    
-    /**
-     * Turn the CassandraRow from the tableRDD (see setUp) 
+
+    @Test
+    public void testNormalizeTableByCB() {
+	FlatMapFunction<CassandraRow, Tuple2<String, String>> flattenByCBCode = new FlatMapFunction<CassandraRow, Tuple2<String, String>>() {
+
+	    @Override
+	    public Iterable<Tuple2<String, String>> call(CassandraRow row)
+		    throws Exception {
+
+		List<Tuple2<String, String>> cbCodes = new ArrayList<Tuple2<String, String>>();
+
+		Map<Object, Object> eligCls = row.getMap(ELIG_CLS);
+		for (Object ec : eligCls.keySet()) {
+		    Tuple2 cls = new Tuple2(ec.toString(), eligCls.get(ec)
+			    .toString());
+		    cbCodes.add(cls);
+		}
+
+		return cbCodes;
+	    }
+
+	};
+
+	JavaRDD<Tuple2<String, String>> clssfs = tableRDD
+		.flatMap(flattenByCBCode);
+
+	assertNotNull(clssfs);
+	assertTrue(clssfs.count() > 0);
+/*
+	Tuple2 ecbY = new Tuple2("ECB", "Y");
+	List<Tuple2<String, String>> results = clssfs.toArray();
+	for (Tuple2<String, String> tuple2 : results) {
+	    System.out.println("(" + tuple2._1 + "," + tuple2._2 + ")");
+	}
+*/	
+    }
+
+    @Test
+    public void testNormalizeTableByCBAndInstrId() {
+	FlatMapFunction<CassandraRow, Map<Tuple2<String, String>, String>> flattenByCBCodeAndInstr = new FlatMapFunction<CassandraRow, Map<Tuple2<String, String>, String>>() {
+
+	    
+	    /*
+	     * Need the Map below to pull out the multivalues from the C* map field
+	     */
+	    @Override
+	    public Iterable<Map<Tuple2<String, String>, String>> call(
+		    CassandraRow row) throws Exception {
+
+		List<Map<Tuple2<String, String>, String>> cbCodes = new ArrayList<Map<Tuple2<String, String>, String>>();
+
+		Map<Object, Object> eligCls = row.getMap(ELIG_CLS);
+		String instrid = row.getString(INSTRID);
+		for (Object ec : eligCls.keySet()) {
+		    Tuple2 cls = new Tuple2(ec.toString(), eligCls.get(ec)
+			    .toString());
+		    Map<Tuple2<String, String>, String> instrIdByCbCls = new HashMap<Tuple2<String, String>, String>();
+		    instrIdByCbCls.put(cls, instrid);
+		    cbCodes.add(instrIdByCbCls);
+		}
+
+		return cbCodes;
+	    }
+
+	};
+
+	/*
+	 * Produces:
+	 * (BOE,Y) => 1234
+	 * (SNB,N) => 1234
+	 * (ECB,Y) => 1234
+	 * (BOC,Y) => 1234
+	 * (ECB,Y) => 1239
+	 * (SNB,Y) => 1237
+	 * (BOC,Y) => 1237
+	 * (BOE,Y) => 1235
+	 * (BOC,Y) => 1235
+	 * (SNB,Y) => 1236
+	 */
+	instridsKeyedByCBClsf = tableRDD.flatMap(flattenByCBCodeAndInstr);
+
+	assertNotNull(instridsKeyedByCBClsf);
+	assertTrue(instridsKeyedByCBClsf.count() > 0);
+
+	String expectedMultiInstrid = "1234";
+	Tuple2<String,String> expectedMultiClsf = new Tuple2<String,String>("BOC","Y");	
+	
+	int instrCount = 0;
+	int clsfCount = 0;
+	
+	List<Map<Tuple2<String, String>, String>> results = instridsKeyedByCBClsf.toArray();
+	for (Map<Tuple2<String, String>, String> entry : results) {
+	    for (Tuple2<String, String> t : entry.keySet()) {
+		String instrid = entry.get(t);
+		if (expectedMultiInstrid.equals(instrid)) instrCount++;
+		if (expectedMultiClsf.equals(t)) clsfCount++;
+	    }
+	}
+	
+	// check multirows at present
+	assertTrue(instrCount > 0);
+	assertTrue(clsfCount > 0);
+
+	// now group by the tuple (cb, clsf)
+	PairFunction<Map<Tuple2<String,String>,String>, Tuple2<String,String>, String> pf
+	 = new PairFunction<Map<Tuple2<String,String>,String>, Tuple2<String,String>, String>() {
+	    
+	    @Override
+	    public Tuple2<Tuple2<String, String>, String> call(Map<Tuple2<String, String>, String> input) throws Exception {
+		
+		Tuple2<String,String> cbClsf = input.keySet().iterator().next();
+		
+		return new Tuple2(cbClsf,input.get(cbClsf));
+	    }
+	};
+	
+	// use the function to collect the keys as keys (i.e. pull them from the map)
+	JavaPairRDD<Tuple2<String,String>, String> normalizedInstrsKeyedByCBClsf = 
+		instridsKeyedByCBClsf.mapToPair(pf);
+
+	// now group by the key
+	JavaPairRDD<Tuple2<String,String>, Iterable<String>> denormalizedInstrsKeyedByCBClsf = 
+		normalizedInstrsKeyedByCBClsf.groupByKey();
+	
+	Tuple2<String,String> bocY = new Tuple2("BOC","Y");
+	Iterable<Iterable<String>> bocInstrs = denormalizedInstrsKeyedByCBClsf.lookup(bocY);
+
+	int countBocYItems = 0;
+	for (Iterable<String> i : bocInstrs) {
+	    for (String s : i) {
+		countBocYItems++;
+		assertTrue(checkBOC(s));
+	    }
+	}
+	
+	assertEquals(3,countBocYItems);
+	
+    }
+
+    /*
+	 * (BOE,Y) => 1234
+	 * (SNB,N) => 1234
+	 * (ECB,Y) => 1234
+	 * (BOC,Y) => 1234
+	 * (ECB,Y) => 1239
+	 * (SNB,Y) => 1237
+	 * (BOC,Y) => 1237
+	 * (BOE,Y) => 1235
+	 * (BOC,Y) => 1235
+	 * (SNB,Y) => 1236
      */
-    @Test
-    public void testToPairMap() {
-	
-	PairFunction<CassandraRow, String, List<Object>> keyByInstrId = 
-		new PairFunction<CassandraRow, String, List<Object>>() {
-
-		    @Override
-		    public Tuple2<String, List<Object>> call(CassandraRow row)
-			    throws Exception {
-
-			String instrid = row.getString(INSTRID);
-			Map<Object,Object> eligCls = row.getMap(ELIGCLS);
-			Map<Object,Object> eligHc = row.getMap(ELIGHC);
-			Map<Object,Object> eligReason = row.getMap(ELIGREASON);
-			String isin = row.getString(ISIN);
-			
-			List<Object> data = new ArrayList<Object>();
-			data.add(instrid);
-			data.add(eligCls);
-			data.add(eligHc);
-			data.add(eligReason);
-			data.add(isin);
-			
-			return new Tuple2<String,List<Object>>(instrid, data);
-		    }
-	    
-	};
-	
-	JavaPairRDD<String, List<Object>> instrIdRows = tableRDD.mapToPair(keyByInstrId);
-	
-	assertNotNull(instrIdRows);
-	assertTrue(instrIdRows.count() > 0);
-	
+    private boolean checkBOC(String s) {
+	return s.equals("1234") || s.equals("1235") || s.equals("1237");
     }
+
+    @Test
+    public void testNormalizeTableByCBAndInstrIdUsingPairMap() {
+	
+	// TODO - not sure this is a goer	
+    }
+
     
     
-    @Test
-    public void testKeyingByCB() {
-	
-	Function<String,List<String>> createInstrList = new Function<String,List<String>>() {
-
-	    @Override
-	    public List<String> call(String instrId) throws Exception {
-		List<String> instrIds = new ArrayList<String>();
-		instrIds.add(instrId);
-		return instrIds;
-	    }
-	    
-	};
-	
-
-	Function2<List<String>, String,List<String>> addInstrToList = new Function2<List<String>, String,List<String>>() {
-
-	    @Override
-	    public List<String> call(List<String> instrIds, String instrId)
-		    throws Exception {
-		instrIds.add(instrId);
-		return instrIds;
-	    }
-	    
-	};
-
-	
-	Function2<List<String>, List<String>, List<String>> combine = new Function2<List<String>, List<String>, List<String>>() {
-
-	    @Override
-	    public List<String> call(List<String> instrIds, List<String> instrIds2)
-		    throws Exception {
-		instrIds.addAll(instrIds2);
-		return instrIds;
-	    }
-	    
-	};
-
-	
-	PairFunction<CassandraRow, Map<String,String>, String> keyByEligibility = 
-		new PairFunction<CassandraRow, Map<String,String>, String>() {
-
-		    @Override
-		    public Tuple2<Map<String,String>, String> call(CassandraRow row)
-			    throws Exception {
-
-			String instrid = row.getString(INSTRID);
-			Map<Object,Object> eligCls = row.getMap(ELIGCLS);
-			
-			Map<String,String> eligibility = new HashMap<String,String>(eligCls.size());
-			for (Object e : eligCls.keySet()) {
-			    eligibility.put(e.toString(), eligCls.get(e).toString());
-			}
-			
-			
-			return new Tuple2<Map<String,String>, String>(eligibility,instrid);
-		    }
-	    
-	};
-	
-	
-	
-	JavaPairRDD<Map<String,String>,String> eligibilityRows = tableRDD.mapToPair(keyByEligibility);
-	
-	assertNotNull(eligibilityRows);
-	assertTrue(eligibilityRows.count() > 0);
-	
-	Map<String,String> ecbY = new HashMap<String,String>();
-	ecbY.put("ECB", "Y");
-	
-	// check data values
-	List<String> ecbYMatches = eligibilityRows.lookup(ecbY);
-	System.out.println(ecbYMatches);
-	
-	// test multivalues for (ECB,Y)
-	
-	JavaPairRDD<Map<String,String>,Iterable<String>> cbInstrDenorm = eligibilityRows.groupByKey();
-	List<Iterable<String>> newEcbYMatches = cbInstrDenorm.lookup(ecbY);
-	System.out.println(newEcbYMatches);
-	
-	
-    }
 }
-
