@@ -34,7 +34,7 @@ public class CbeTest extends AbstractCSparkTest implements Serializable {
 
     private JavaRDD<CassandraRow> tableRDD;
     private JavaPairRDD<String, CassandraRow> rowsKeyedByInstrid;
-    private JavaRDD<Map<Tuple2<String, String>, String>> instridsKeyedByCBClsf;
+    private JavaRDD<Tuple2<Tuple2<String, String>, String>> instridsKeyedByCBClsf;
 
     @Before
     public void setUp() {
@@ -172,25 +172,24 @@ public class CbeTest extends AbstractCSparkTest implements Serializable {
 
     @Test
     public void testNormalizeTableByCBAndInstrId() {
-	FlatMapFunction<CassandraRow, Map<Tuple2<String, String>, String>> flattenByCBCodeAndInstr = new FlatMapFunction<CassandraRow, Map<Tuple2<String, String>, String>>() {
+	
+	FlatMapFunction<CassandraRow, Tuple2<Tuple2<String, String>, String>> flattenByCBCodeAndInstr = new FlatMapFunction<CassandraRow, Tuple2<Tuple2<String, String>, String>>() {
 
 	    
 	    /*
 	     * Need the Map below to pull out the multivalues from the C* map field
 	     */
 	    @Override
-	    public Iterable<Map<Tuple2<String, String>, String>> call(
+	    public Iterable<Tuple2<Tuple2<String, String>, String>> call(
 		    CassandraRow row) throws Exception {
 
-		List<Map<Tuple2<String, String>, String>> cbCodes = new ArrayList<Map<Tuple2<String, String>, String>>();
+		List<Tuple2<Tuple2<String, String>, String>> cbCodes = new ArrayList<Tuple2<Tuple2<String, String>, String>>();
 
 		Map<Object, Object> eligCls = row.getMap(ELIG_CLS);
 		String instrid = row.getString(INSTRID);
 		for (Object ec : eligCls.keySet()) {
-		    Tuple2 cls = new Tuple2(ec.toString(), eligCls.get(ec)
-			    .toString());
-		    Map<Tuple2<String, String>, String> instrIdByCbCls = new HashMap<Tuple2<String, String>, String>();
-		    instrIdByCbCls.put(cls, instrid);
+		    Tuple2 cls = new Tuple2(ec.toString(), eligCls.get(ec).toString());
+		    Tuple2<Tuple2<String, String>, String> instrIdByCbCls = new Tuple2<Tuple2<String, String>, String>(cls, instrid);
 		    cbCodes.add(instrIdByCbCls);
 		}
 
@@ -223,29 +222,25 @@ public class CbeTest extends AbstractCSparkTest implements Serializable {
 	int instrCount = 0;
 	int clsfCount = 0;
 	
-	List<Map<Tuple2<String, String>, String>> results = instridsKeyedByCBClsf.toArray();
-	for (Map<Tuple2<String, String>, String> entry : results) {
-	    for (Tuple2<String, String> t : entry.keySet()) {
-		String instrid = entry.get(t);
-		if (expectedMultiInstrid.equals(instrid)) instrCount++;
-		if (expectedMultiClsf.equals(t)) clsfCount++;
-	    }
+	List<Tuple2<Tuple2<String, String>, String>> results = instridsKeyedByCBClsf.collect(); // ONLY FOR TESTING
+	for (Tuple2<Tuple2<String, String>, String> item : results) {
+	    Tuple2<String,String> clsf = item._1;
+	    String instrid = item._2;
+	    if (expectedMultiInstrid.equals(instrid)) instrCount++;
+	    if (expectedMultiClsf.equals(clsf)) clsfCount++;
 	}
 	
 	// check multirows at present
-	assertTrue(instrCount > 0);
-	assertTrue(clsfCount > 0);
+	assertTrue(instrCount > 1);
+	assertTrue(clsfCount > 1);
 
 	// now group by the tuple (cb, clsf)
-	PairFunction<Map<Tuple2<String,String>,String>, Tuple2<String,String>, String> pf
-	 = new PairFunction<Map<Tuple2<String,String>,String>, Tuple2<String,String>, String>() {
+	PairFunction<Tuple2<Tuple2<String,String>,String>, Tuple2<String,String>, String> pf
+	 = new PairFunction<Tuple2<Tuple2<String,String>,String>, Tuple2<String,String>, String>() {
 	    
 	    @Override
-	    public Tuple2<Tuple2<String, String>, String> call(Map<Tuple2<String, String>, String> input) throws Exception {
-		
-		Tuple2<String,String> cbClsf = input.keySet().iterator().next();
-		
-		return new Tuple2(cbClsf,input.get(cbClsf));
+	    public Tuple2<Tuple2<String, String>, String> call(Tuple2<Tuple2<String, String>, String> input) throws Exception {
+		return new Tuple2(input._1,input._2);
 	    }
 	};
 	
